@@ -1,0 +1,14 @@
+[
+  {
+    "id": "event_001",
+    "event": "Example Event",
+    "date": "2026-12-31",
+    "venue": "Example Venue",
+    "city": "Washington, DC",
+    "max_price": 150,
+    "quantity": 2,
+    "section_pref": "any",
+    "row_pref": "any",
+    "digest": true
+  }
+]

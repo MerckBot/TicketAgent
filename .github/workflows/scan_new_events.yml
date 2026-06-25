@@ -1,0 +1,38 @@
+name: Scan New Events
+
+on:
+  schedule:
+    - cron: '0 9 * * *'   # Daily at 9:00 AM UTC
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Restore price database
+        uses: actions/cache@v4
+        with:
+          path: data/prices.db
+          key: prices-db-
+          restore-keys: prices-db-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Scan for new events
+        working-directory: agent
+        run: python auto_suggest.py
+        env:
+          TICKETMASTER_KEY: ${{ secrets.TICKETMASTER_KEY }}
+          SEATGEEK_CLIENT_ID: ${{ secrets.SEATGEEK_CLIENT_ID }}
+          SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}

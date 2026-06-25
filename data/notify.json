@@ -1,0 +1,7 @@
+{
+  "email": "jmerck2d2@gmail.com",
+  "smtp_host": "smtp.gmail.com",
+  "smtp_port": 587,
+  "digest_day": "Monday",
+  "digest_time": "08:00"
+}

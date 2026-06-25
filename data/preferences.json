@@ -1,0 +1,34 @@
+{
+  "artists": [
+    "Bruce Springsteen",
+    "Bryson Tiller",
+    "Pitbull"
+  ],
+  "teams": [
+    "Buffalo Bills",
+    "Buffalo Sabres"
+  ],
+  "venues": [
+    "Jiffy Lube Live",
+    "Capital One Arena"
+  ],
+  "venue_matchups": [
+    {
+      "artist": "Bryson Tiller",
+      "venue": "Jiffy Lube Live"
+    },
+    {
+      "artist": "Pitbull",
+      "venue": "Jiffy Lube Live"
+    },
+    {
+      "team_away": "Buffalo Bills",
+      "team_home": "Los Angeles Rams"
+    },
+    {
+      "team_away": "Buffalo Sabres",
+      "team_home": "Washington Capitals"
+    }
+  ],
+  "home_region": "Washington, DC"
+}
