@@ -85,13 +85,19 @@ def is_due_for_check(event_date_str):
 def fetch_ticketmaster(event):
     """Query Ticketmaster Discovery API."""
     try:
+        # Ticketmaster's dateTime is UTC while event["date"] is the local calendar
+        # date; an evening event can land on the next UTC day, so pad +/- 1 day.
+        event_date = datetime.date.fromisoformat(event["date"])
+        window_start = event_date - datetime.timedelta(days=1)
+        window_end = event_date + datetime.timedelta(days=1)
+
         url = "https://app.ticketmaster.com/discovery/v2/events.json"
         params = {
             "apikey": TM_KEY,
             "keyword": event["event"],
             "city": event.get("city", ""),
-            "startDateTime": f"{event['date']}T00:00:00Z",
-            "endDateTime": f"{event['date']}T23:59:59Z",
+            "startDateTime": f"{window_start.isoformat()}T00:00:00Z",
+            "endDateTime": f"{window_end.isoformat()}T23:59:59Z",
             "size": 5,
         }
         r = requests.get(url, params=params, timeout=10)
