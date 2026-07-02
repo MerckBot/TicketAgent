@@ -95,5 +95,17 @@
     "section_pref": "any",
     "row_pref": "any",
     "digest": true
+  },
+  {
+    "id": "event_009",
+    "event": "Pitbull",
+    "date": "2026-08-19",
+    "venue": "Jiffy Lube Live",
+    "city": "Bristow, VA",
+    "max_price": 200,
+    "quantity": 2,
+    "section_pref": "any",
+    "row_pref": "any",
+    "digest": true
   }
 ]
