@@ -107,5 +107,17 @@
     "section_pref": "any",
     "row_pref": "any",
     "digest": true
+  },
+  {
+    "id": "event_010",
+    "event": "Harry Styles",
+    "date": "2026-10-09",
+    "venue": "Madison Square Garden",
+    "city": "New York, NY",
+    "max_price": 500,
+    "quantity": 1,
+    "section_pref": "any",
+    "row_pref": "any",
+    "digest": true
   }
 ]

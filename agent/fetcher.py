@@ -1,23 +1,47 @@
 """
-fetcher.py
-Queries Ticketmaster, StubHub, and SeatGeek for each event in events.json.
-Writes price snapshots to SQLite. Skips events not due for a check yet.
+fetcher.py (v1.2)
+Queries StubHub and SeatGeek for each event in events.json.
+Ticketmaster is NOT a price source (Discovery API returns static face-value
+ranges, not live prices) — it is used only by auto_suggest.py for discovery.
+
+Writes price snapshots to SQLite. Uses per-event last_checked timestamps,
+so delayed/skipped GitHub cron runs never silently drop a check.
 """
 
 import os
 import json
 import sqlite3
 import datetime
-import requests
+from datetime import timezone
 from pathlib import Path
-from token_manager import get_stubhub_token
+
+import requests
+
+from token_manager import get_stubhub_token, stubhub_creds_present
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 DB_PATH = DATA_DIR / "prices.db"
 EVENTS_PATH = DATA_DIR / "events.json"
 
-TM_KEY = os.environ.get("TICKETMASTER_KEY", "PLACEHOLDER_TM_KEY")
-SG_CLIENT_ID = os.environ.get("SEATGEEK_CLIENT_ID", "PLACEHOLDER_SG_CLIENT_ID")
+SG_CLIENT_ID = os.environ.get("SEATGEEK_CLIENT_ID", "")
+
+
+def creds_present(value):
+    return bool(value) and not value.startswith("PLACEHOLDER")
+
+
+def utcnow():
+    return datetime.datetime.now(timezone.utc)
+
+
+def split_city_state(city_field):
+    """'Las Vegas, NV' -> ('Las Vegas', 'NV'); 'Las Vegas' -> ('Las Vegas', '')."""
+    if not city_field:
+        return "", ""
+    parts = [p.strip() for p in city_field.split(",")]
+    if len(parts) >= 2 and len(parts[-1]) == 2:
+        return ", ".join(parts[:-1]), parts[-1].upper()
+    return city_field.strip(), ""
 
 
 # ── DB setup ──────────────────────────────────────────────────────────────────
@@ -46,180 +70,208 @@ def init_db():
             fired_at TEXT
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS event_state (
+            event_id TEXT PRIMARY KEY,
+            last_checked TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_price_history_lookup
+        ON price_history (event_id, platform, checked_at)
+    """)
     conn.commit()
     return conn
 
 
 # ── Check frequency logic ─────────────────────────────────────────────────────
 
-def is_due_for_check(event_date_str):
-    """Return True if this event is due for a price check based on proximity."""
-    today = datetime.date.today()
+def required_interval_hours(days_until):
+    """How often an event should be checked, by proximity."""
+    if days_until > 30:
+        return 168   # weekly
+    if days_until > 7:
+        return 24    # daily
+    if days_until > 1:
+        return 6
+    return 2         # day before + day of (+1 day grace for UTC/local skew)
+
+
+def is_due_for_check(event, conn, now):
+    """Elapsed-time check against event_state.last_checked.
+
+    Robust against GitHub's delayed/skipped cron runs: a missed hour just
+    means the next run picks it up, instead of losing a whole day or week.
+    """
+    date_str = event.get("date", "")
     try:
-        event_date = datetime.date.fromisoformat(event_date_str)
-    except ValueError:
+        event_date = datetime.date.fromisoformat(date_str)
+    except (ValueError, TypeError):
+        print(f"  [WARN] {event.get('id','?')} '{event.get('event','?')}' has "
+              f"unparseable date '{date_str}' — skipping until a real date is set.")
         return False
 
-    days_until = (event_date - today).days
-    if days_until < 0:
-        return False  # Past event
+    days_until = (event_date - now.date()).days
+    # Runner clock is UTC; a US evening event is still live when UTC has
+    # rolled to the next day, so keep checking through days_until == -1.
+    if days_until < -1:
+        return False
 
-    now_hour = datetime.datetime.utcnow().hour
+    row = conn.execute(
+        "SELECT last_checked FROM event_state WHERE event_id=?", (event["id"],)
+    ).fetchone()
+    if not row or not row[0]:
+        return True
 
-    if days_until > 30:
-        # Weekly — check on Mondays
-        return datetime.datetime.utcnow().weekday() == 0 and now_hour == 0
-    elif days_until > 7:
-        # Daily — check at midnight UTC
-        return now_hour == 0
-    elif days_until > 1:
-        # Every 6 hours
-        return now_hour % 6 == 0
-    else:
-        # Day-of — every 2 hours
-        return now_hour % 2 == 0
+    last = datetime.datetime.fromisoformat(row[0])
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    elapsed_hours = (now - last).total_seconds() / 3600.0
+
+    # 0.25h tolerance so a cron run landing a few minutes early still counts
+    return elapsed_hours >= required_interval_hours(days_until) - 0.25
+
+
+def mark_checked(conn, event_id, now_iso):
+    conn.execute(
+        "INSERT INTO event_state (event_id, last_checked) VALUES (?, ?) "
+        "ON CONFLICT(event_id) DO UPDATE SET last_checked=excluded.last_checked",
+        (event_id, now_iso)
+    )
+    conn.commit()
 
 
 # ── Platform fetchers ─────────────────────────────────────────────────────────
 
-def fetch_ticketmaster(event):
-    """Query Ticketmaster Discovery API."""
-    try:
-        # Ticketmaster's dateTime is UTC while event["date"] is the local calendar
-        # date; an evening event can land on the next UTC day, so pad +/- 1 day.
-        event_date = datetime.date.fromisoformat(event["date"])
-        window_start = event_date - datetime.timedelta(days=1)
-        window_end = event_date + datetime.timedelta(days=1)
-
-        url = "https://app.ticketmaster.com/discovery/v2/events.json"
-        params = {
-            "apikey": TM_KEY,
-            "keyword": event["event"],
-            "city": event.get("city", ""),
-            "startDateTime": f"{window_start.isoformat()}T00:00:00Z",
-            "endDateTime": f"{window_end.isoformat()}T23:59:59Z",
-            "size": 5,
-        }
-        r = requests.get(url, params=params, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-        events = data.get("_embedded", {}).get("events", [])
-        if not events:
-            return None
-
-        # Find cheapest price range across results
-        best = None
-        best_url = None
-        for ev in events:
-            price_ranges = ev.get("priceRanges", [])
-            for pr in price_ranges:
-                min_price = pr.get("min")
-                if min_price and (best is None or min_price < best):
-                    best = min_price
-                    best_url = ev.get("url")
-
-        if best:
-            return {"platform": "ticketmaster", "lowest_price": best, "section": "General", "quantity": None, "url": best_url}
-    except Exception as e:
-        print(f"[Ticketmaster] Error: {e}")
-    return None
-
-
 def fetch_stubhub(event):
-    """Query StubHub API v3."""
+    """Query StubHub API. Skips cleanly if credentials aren't configured."""
+    if not stubhub_creds_present():
+        print("  [STUBHUB] Skipped — credentials not configured yet")
+        return None
     try:
         token = get_stubhub_token()
         url = "https://api.stubhub.com/sellers/search/events/v3"
-        params = {"name": event["event"], "city": event.get("city", "")}
-        r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, params=params, timeout=10)
+        city, _state = split_city_state(event.get("city", ""))
+        params = {"name": event["event"], "city": city}
+        r = requests.get(url, headers={"Authorization": f"Bearer {token}"},
+                         params=params, timeout=10)
         r.raise_for_status()
-        data = r.json()
-        items = data.get("events", [])
+        items = r.json().get("events", [])
         if not items:
             return None
 
         best = None
         best_url = None
         for item in items:
-            price = item.get("minPrice") or item.get("ticketInfo", {}).get("minPrice")
-            if price and (best is None or price < best):
+            price = item.get("minPrice")
+            if price is None:
+                price = item.get("ticketInfo", {}).get("minPrice")
+            try:
+                price = float(price) if price is not None else None
+            except (TypeError, ValueError):
+                continue
+            if price is not None and (best is None or price < best):
                 best = price
                 best_url = f"https://www.stubhub.com/event/{item.get('id', '')}"
 
-        if best:
-            return {"platform": "stubhub", "lowest_price": best, "section": "General", "quantity": None, "url": best_url}
+        if best is not None:
+            return {"platform": "stubhub", "lowest_price": best,
+                    "section": "General", "quantity": None, "url": best_url}
     except Exception as e:
-        print(f"[StubHub] Error: {e}")
+        print(f"  [STUBHUB] Error: {e}")
     return None
 
 
 def fetch_seatgeek(event):
-    """Query SeatGeek API."""
+    """Query SeatGeek API. Skips cleanly if credentials aren't configured."""
+    if not creds_present(SG_CLIENT_ID):
+        print("  [SEATGEEK] Skipped — credentials not configured yet")
+        return None
     try:
         url = "https://api.seatgeek.com/2/events"
+        city, state = split_city_state(event.get("city", ""))
         params = {
             "client_id": SG_CLIENT_ID,
             "q": event["event"],
-            "venue.city": event.get("city", ""),
             "datetime_local.gte": f"{event['date']}T00:00:00",
             "datetime_local.lte": f"{event['date']}T23:59:59",
             "per_page": 5,
         }
+        if city:
+            params["venue.city"] = city
+        if state:
+            params["venue.state"] = state
         r = requests.get(url, params=params, timeout=10)
         r.raise_for_status()
-        data = r.json()
-        items = data.get("events", [])
+        items = r.json().get("events", [])
         if not items:
             return None
 
         best = None
         best_url = None
         for item in items:
-            stats = item.get("stats", {})
-            price = stats.get("lowest_price")
-            if price and (best is None or price < best):
+            price = (item.get("stats") or {}).get("lowest_price")
+            try:
+                price = float(price) if price is not None else None
+            except (TypeError, ValueError):
+                continue
+            if price is not None and (best is None or price < best):
                 best = price
                 best_url = item.get("url")
 
-        if best:
-            return {"platform": "seatgeek", "lowest_price": best, "section": "General", "quantity": None, "url": best_url}
+        if best is not None:
+            return {"platform": "seatgeek", "lowest_price": best,
+                    "section": "General", "quantity": None, "url": best_url}
     except Exception as e:
-        print(f"[SeatGeek] Error: {e}")
+        print(f"  [SEATGEEK] Error: {e}")
     return None
+
+
+PRICE_FETCHERS = [fetch_stubhub, fetch_seatgeek]
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def run():
+    from alert_engine import evaluate_triggers
+
     conn = init_db()
     events = json.loads(EVENTS_PATH.read_text())
-    now = datetime.datetime.utcnow().isoformat()
+
+    # Fail loudly on duplicate IDs instead of silently corrupting history
+    ids = [e.get("id") for e in events]
+    dupes = {i for i in ids if ids.count(i) > 1}
+    if dupes:
+        raise SystemExit(f"[FATAL] Duplicate event ids in events.json: {sorted(dupes)}")
+
+    now = utcnow()
+    now_iso = now.isoformat()
 
     for event in events:
-        if not is_due_for_check(event["date"]):
-            print(f"[SKIP] {event['event']} — not due for check")
+        if not is_due_for_check(event, conn, now):
+            print(f"[SKIP] {event.get('event','?')} — not due for check")
             continue
 
         print(f"\n[CHECK] {event['event']} on {event['date']}")
         results = []
 
-        for fetcher in [fetch_ticketmaster, fetch_stubhub, fetch_seatgeek]:
+        for fetcher in PRICE_FETCHERS:
             result = fetcher(event)
             if result:
                 results.append(result)
                 conn.execute(
-                    "INSERT INTO price_history (event_id, platform, checked_at, lowest_price, section, quantity_available, listing_url) VALUES (?,?,?,?,?,?,?)",
-                    (event["id"], result["platform"], now, result["lowest_price"], result.get("section"), result.get("quantity"), result.get("url"))
+                    "INSERT INTO price_history (event_id, platform, checked_at, "
+                    "lowest_price, section, quantity_available, listing_url) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (event["id"], result["platform"], now_iso,
+                     result["lowest_price"], result.get("section"),
+                     result.get("quantity"), result.get("url"))
                 )
                 print(f"  [{result['platform'].upper()}] ${result['lowest_price']:.2f}")
-            else:
-                print(f"  [{fetcher.__name__.replace('fetch_','')}] No results")
-
         conn.commit()
 
-        # Pass results to alert engine
-        from alert_engine import evaluate_triggers
-        evaluate_triggers(event, results, conn, now)
+        evaluate_triggers(event, results, conn, now_iso)
+        mark_checked(conn, event["id"], now_iso)
 
     conn.close()
     print("\n[DONE] Price check complete.")

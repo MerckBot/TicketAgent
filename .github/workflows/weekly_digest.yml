@@ -5,23 +5,23 @@ on:
     - cron: '0 8 * * 1'   # Every Monday at 8:00 AM UTC
   workflow_dispatch:
 
+# Digest only reads the DB, but join the same group so we never read mid-write
+concurrency:
+  group: ticketwatch-db
+  cancel-in-progress: false
+
 jobs:
   digest:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Restore price database
-        uses: actions/cache@v4
-        with:
-          path: data/prices.db
-          key: prices-db-
-          restore-keys: prices-db-
 
       - name: Install dependencies
         run: pip install -r requirements.txt
@@ -31,6 +31,7 @@ jobs:
         run: python email_sender.py --mode digest
         env:
           SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+          SENDGRID_FROM: ${{ secrets.SENDGRID_FROM }}
           NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}

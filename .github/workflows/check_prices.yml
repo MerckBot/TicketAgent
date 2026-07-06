@@ -2,8 +2,16 @@ name: Check Prices
 
 on:
   schedule:
-    - cron: '0 * * * *'   # Every hour; Python skips events not due yet
-  workflow_dispatch:        # Allow manual trigger
+    - cron: '0 * * * *'   # Hourly; fetcher.py decides per-event whether a check is due
+  workflow_dispatch:
+
+permissions:
+  contents: write          # Needed to commit prices.db back to the repo
+
+# One writer at a time across all TicketWatch workflows — prevents DB clobbering
+concurrency:
+  group: ticketwatch-db
+  cancel-in-progress: false
 
 jobs:
   check:
@@ -18,13 +26,6 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Restore price database
-        uses: actions/cache@v4
-        with:
-          path: data/prices.db
-          key: prices-db-${{ github.run_id }}
-          restore-keys: prices-db-
-
       - name: Install dependencies
         run: pip install -r requirements.txt
 
@@ -37,10 +38,22 @@ jobs:
           STUBHUB_CLIENT_SECRET: ${{ secrets.STUBHUB_CLIENT_SECRET }}
           SEATGEEK_CLIENT_ID: ${{ secrets.SEATGEEK_CLIENT_ID }}
           SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
+          SENDGRID_FROM: ${{ secrets.SENDGRID_FROM }}
           NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
 
-      - name: Save price database
-        uses: actions/cache@v4
-        with:
-          path: data/prices.db
-          key: prices-db-${{ github.run_id }}
+      - name: Commit price database
+        run: |
+          git config user.name "ticketwatch-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/prices.db
+          if git diff --cached --quiet; then
+            echo "No database changes to commit."
+          else
+            git commit -m "chore(db): price check $(date -u +'%Y-%m-%d %H:%M UTC') [skip ci]"
+            # Rebase in case a human pushed code mid-run; DB conflicts can't
+            # happen because the concurrency group serializes all DB writers.
+            git pull --rebase origin main
+            git push origin main
+          fi
