@@ -89,6 +89,7 @@ Checks continue one day past the event date to cover the UTC/local timezone gap 
 - `quantity`, `section_pref`, and `row_pref` in events.json are informational only — the fetched "lowest price" may be a single seat in any section. Enforcing them needs listing-level API access.
 - Events with `date: "TBD"` are skipped (with a log warning) until a real date is set.
 - The StubHub endpoint/auth in `token_manager.py` is from their older developer program — verify against whatever their API team sends with your credentials.
+- **SeatGeek returns `403 Forbidden` from GitHub Actions specifically** (confirmed 2026-07-06: identical client ID + query succeeds from a residential IP, fails from Actions' runners). Likely SeatGeek/a WAF blocking known datacenter IP ranges. Not a code or credentials issue — `fetch_seatgeek`/`scan_seatgeek` will keep failing in CI until this is resolved with SeatGeek support or worked around via a proxy. StubHub is the working price source in CI for now.
 
 ---
 
