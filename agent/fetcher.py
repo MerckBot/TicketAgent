@@ -54,7 +54,7 @@ def seatgeek_get(url, params, timeout=20):
         return requests.get(
             "https://api.scraperapi.com",
             params={"api_key": SCRAPERAPI_KEY, "url": target},
-            timeout=timeout + 20,  # ScraperAPI adds proxy/retry latency
+            timeout=timeout + 80,  # ScraperAPI retries for up to 70s server-side
         )
     return requests.get(url, params=params, headers=SEATGEEK_HEADERS, timeout=timeout)
 
