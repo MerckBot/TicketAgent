@@ -20,7 +20,6 @@ import argparse
 import datetime
 from datetime import timezone
 from pathlib import Path
-from urllib.parse import urlencode
 
 import requests
 
@@ -32,12 +31,11 @@ PREFS_PATH = DATA_DIR / "preferences.json"
 
 TM_KEY = os.environ.get("TICKETMASTER_KEY", "")
 SG_CLIENT_ID = os.environ.get("SEATGEEK_CLIENT_ID", "")
-SCRAPERAPI_KEY = os.environ.get("SCRAPERAPI_KEY", "")
 
-# A browser-like UA didn't fix SeatGeek's 403 from GitHub Actions (confirmed
-# 2026-07-11) — it's an IP/ASN-level block, not a bot-signature check. Kept
-# anyway since it's harmless. SCRAPERAPI_KEY routes the request through
-# ScraperAPI's free-tier proxy (rotating IPs) to get around the block.
+# SeatGeek 403s every request from GitHub Actions' IPs specifically (confirmed
+# 2026-07-06), including through a rotating-IP proxy (ScraperAPI, ruled out
+# 2026-07-11) — it's an IP/ASN-level block. A self-hosted runner on a
+# residential IP works fine, so SeatGeek scanning runs there instead (README).
 SEATGEEK_HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
@@ -47,23 +45,6 @@ SEATGEEK_HEADERS = {
 
 def creds_present(value):
     return bool(value) and not value.startswith("PLACEHOLDER")
-
-
-def seatgeek_get(url, params, timeout=20):
-    """GET a SeatGeek endpoint, routed through ScraperAPI if configured.
-
-    SeatGeek 403s every request from GitHub Actions' IPs directly (confirmed
-    2026-07-11), so when SCRAPERAPI_KEY is set we tunnel through ScraperAPI's
-    rotating-IP proxy instead of hitting SeatGeek directly.
-    """
-    if creds_present(SCRAPERAPI_KEY):
-        target = f"{url}?{urlencode(params)}"
-        return requests.get(
-            "https://api.scraperapi.com",
-            params={"api_key": SCRAPERAPI_KEY, "url": target},
-            timeout=timeout + 80,  # ScraperAPI retries for up to 70s server-side
-        )
-    return requests.get(url, params=params, headers=SEATGEEK_HEADERS, timeout=timeout)
 
 
 def split_city_state(city_field):
@@ -161,7 +142,7 @@ def scan_seatgeek(keyword, city, state):
             params["venue.city"] = city
         if state:
             params["venue.state"] = state
-        r = seatgeek_get(url, params, timeout=10)
+        r = requests.get(url, params=params, headers=SEATGEEK_HEADERS, timeout=10)
         r.raise_for_status()
         data = r.json()
         for ev in data.get("events", []):
@@ -214,7 +195,8 @@ def send_suggest_email(new_events):
     return send_email(NOTIFY_EMAIL, subject, html_body)
 
 
-def run(seed=False):
+def run(seed=False, platforms=None):
+    """platforms: optional set restricting which scanners run (default: all)."""
     prefs = json.loads(PREFS_PATH.read_text())
     region = prefs.get("home_region", "Washington, DC")
     city, state = split_city_state(region)
@@ -235,8 +217,11 @@ def run(seed=False):
 
     for keyword in all_keywords:
         print(f"[SCAN] {keyword}")
-        candidates = (scan_ticketmaster(keyword, city, state)
-                      + scan_seatgeek(keyword, city, state))
+        candidates = []
+        if platforms is None or "ticketmaster" in platforms:
+            candidates += scan_ticketmaster(keyword, city, state)
+        if platforms is None or "seatgeek" in platforms:
+            candidates += scan_seatgeek(keyword, city, state)
         for ev in candidates:
             if ev["id"] in seen_this_run:
                 continue
@@ -271,5 +256,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", action="store_true",
                         help="Mark all current results as seen without emailing")
+    parser.add_argument("--platforms", help="Comma-separated platform list "
+                         "(ticketmaster,seatgeek). Default: all.")
     args = parser.parse_args()
-    run(seed=args.seed)
+    run(seed=args.seed,
+        platforms=set(args.platforms.split(",")) if args.platforms else None)

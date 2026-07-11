@@ -29,15 +29,13 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run price check
+      - name: Run price check (StubHub — SeatGeek runs separately, see check_prices_selfhosted.yml)
         working-directory: agent
-        run: python fetcher.py
+        run: python fetcher.py --platforms stubhub
         env:
           TICKETMASTER_KEY: ${{ secrets.TICKETMASTER_KEY }}
           STUBHUB_CLIENT_ID: ${{ secrets.STUBHUB_CLIENT_ID }}
           STUBHUB_CLIENT_SECRET: ${{ secrets.STUBHUB_CLIENT_SECRET }}
-          SEATGEEK_CLIENT_ID: ${{ secrets.SEATGEEK_CLIENT_ID }}
-          SCRAPERAPI_KEY: ${{ secrets.SCRAPERAPI_KEY }}
           SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
           SENDGRID_FROM: ${{ secrets.SENDGRID_FROM }}
           NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}

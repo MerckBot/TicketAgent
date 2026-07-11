@@ -1,20 +1,30 @@
-name: Scan New Events
+name: Check Prices (SeatGeek, self-hosted)
+
+# SeatGeek 403s every request from GitHub-hosted runners' IPs (confirmed
+# 2026-07-06, and again through a rotating-IP proxy on 2026-07-11) — it's an
+# IP/ASN-level block. A residential IP works fine, so this job only runs on
+# a self-hosted runner. Queued runs just wait if that runner is offline;
+# fetcher.py's per-(event, platform) due-check means a delayed run is a
+# no-op catch-up, never a lost check. StubHub keeps running reliably in the
+# cloud via check_prices.yml regardless of this runner's availability.
 
 on:
   schedule:
-    - cron: '0 9 * * *'   # Daily at 9:00 AM UTC
+    - cron: '0 * * * *'   # Hourly; fetcher.py decides per-event whether a check is due
   workflow_dispatch:
 
 permissions:
   contents: write
 
+# Same group as the cloud workflow — one DB writer at a time across all
+# TicketWatch workflows, prevents DB clobbering.
 concurrency:
   group: ticketwatch-db
   cancel-in-progress: false
 
 jobs:
-  scan:
-    runs-on: ubuntu-latest
+  check:
+    runs-on: self-hosted
 
     steps:
       - uses: actions/checkout@v4
@@ -28,11 +38,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Scan for new events (Ticketmaster — SeatGeek runs separately, see scan_new_events_selfhosted.yml)
+      - name: Run price check (SeatGeek only)
         working-directory: agent
-        run: python auto_suggest.py --platforms ticketmaster
+        run: python fetcher.py --platforms seatgeek
         env:
-          TICKETMASTER_KEY: ${{ secrets.TICKETMASTER_KEY }}
+          SEATGEEK_CLIENT_ID: ${{ secrets.SEATGEEK_CLIENT_ID }}
           SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
           SENDGRID_FROM: ${{ secrets.SENDGRID_FROM }}
           NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
@@ -47,7 +57,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No database changes to commit."
           else
-            git commit -m "chore(db): event scan $(date -u +'%Y-%m-%d %H:%M UTC') [skip ci]"
+            git commit -m "chore(db): price check (seatgeek/self-hosted) $(date -u +'%Y-%m-%d %H:%M UTC') [skip ci]"
             git pull --rebase origin main
             git push origin main
           fi

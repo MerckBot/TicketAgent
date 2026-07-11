@@ -4,17 +4,19 @@ Queries StubHub and SeatGeek for each event in events.json.
 Ticketmaster is NOT a price source (Discovery API returns static face-value
 ranges, not live prices) — it is used only by auto_suggest.py for discovery.
 
-Writes price snapshots to SQLite. Uses per-event last_checked timestamps,
-so delayed/skipped GitHub cron runs never silently drop a check.
+Writes price snapshots to SQLite. Uses per-(event, platform) last_checked
+timestamps, so delayed/skipped GitHub cron runs never silently drop a check,
+and StubHub (cloud) and SeatGeek (self-hosted, see README) can run on
+independent schedules without one platform's run starving the other's.
 """
 
 import os
 import json
 import sqlite3
+import argparse
 import datetime
 from datetime import timezone
 from pathlib import Path
-from urllib.parse import urlencode
 
 import requests
 
@@ -25,12 +27,11 @@ DB_PATH = DATA_DIR / "prices.db"
 EVENTS_PATH = DATA_DIR / "events.json"
 
 SG_CLIENT_ID = os.environ.get("SEATGEEK_CLIENT_ID", "")
-SCRAPERAPI_KEY = os.environ.get("SCRAPERAPI_KEY", "")
 
-# A browser-like UA didn't fix SeatGeek's 403 from GitHub Actions (confirmed
-# 2026-07-11) — it's an IP/ASN-level block, not a bot-signature check. Kept
-# anyway since it's harmless. SCRAPERAPI_KEY routes the request through
-# ScraperAPI's free-tier proxy (rotating IPs) to get around the block.
+# SeatGeek 403s every request from GitHub Actions' IPs specifically (confirmed
+# 2026-07-06), including through a rotating-IP proxy (ScraperAPI, ruled out
+# 2026-07-11) — it's an IP/ASN-level block. A self-hosted runner on a
+# residential IP works fine, so SeatGeek runs there instead (see README).
 SEATGEEK_HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
@@ -40,23 +41,6 @@ SEATGEEK_HEADERS = {
 
 def creds_present(value):
     return bool(value) and not value.startswith("PLACEHOLDER")
-
-
-def seatgeek_get(url, params, timeout=20):
-    """GET a SeatGeek endpoint, routed through ScraperAPI if configured.
-
-    SeatGeek 403s every request from GitHub Actions' IPs directly (confirmed
-    2026-07-11), so when SCRAPERAPI_KEY is set we tunnel through ScraperAPI's
-    rotating-IP proxy instead of hitting SeatGeek directly.
-    """
-    if creds_present(SCRAPERAPI_KEY):
-        target = f"{url}?{urlencode(params)}"
-        return requests.get(
-            "https://api.scraperapi.com",
-            params={"api_key": SCRAPERAPI_KEY, "url": target},
-            timeout=timeout + 80,  # ScraperAPI retries for up to 70s server-side
-        )
-    return requests.get(url, params=params, headers=SEATGEEK_HEADERS, timeout=timeout)
 
 
 def utcnow():
@@ -100,11 +84,14 @@ def init_db():
         )
     """)
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS event_state (
-            event_id TEXT PRIMARY KEY,
-            last_checked TEXT
+        CREATE TABLE IF NOT EXISTS platform_state (
+            event_id TEXT,
+            platform TEXT,
+            last_checked TEXT,
+            PRIMARY KEY (event_id, platform)
         )
     """)
+    conn.execute("DROP TABLE IF EXISTS event_state")  # superseded by platform_state
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_price_history_lookup
         ON price_history (event_id, platform, checked_at)
@@ -126,28 +113,26 @@ def required_interval_hours(days_until):
     return 2         # day before + day of (+1 day grace for UTC/local skew)
 
 
-def is_due_for_check(event, conn, now):
-    """Elapsed-time check against event_state.last_checked.
-
-    Robust against GitHub's delayed/skipped cron runs: a missed hour just
-    means the next run picks it up, instead of losing a whole day or week.
-    """
+def event_days_until(event, now):
+    """Days from now to the event date, or None if the date is unparseable."""
     date_str = event.get("date", "")
     try:
         event_date = datetime.date.fromisoformat(date_str)
     except (ValueError, TypeError):
-        print(f"  [WARN] {event.get('id','?')} '{event.get('event','?')}' has "
-              f"unparseable date '{date_str}' — skipping until a real date is set.")
-        return False
+        return None
+    return (event_date - now.date()).days
 
-    days_until = (event_date - now.date()).days
-    # Runner clock is UTC; a US evening event is still live when UTC has
-    # rolled to the next day, so keep checking through days_until == -1.
-    if days_until < -1:
-        return False
 
+def is_platform_due(event, platform, days_until, conn, now):
+    """Elapsed-time check against platform_state.last_checked for one platform.
+
+    Tracked per (event, platform) rather than per event, so StubHub (cloud,
+    hourly) and SeatGeek (self-hosted, only when that runner is online) can
+    each follow their own cadence without one starving the other's check.
+    """
     row = conn.execute(
-        "SELECT last_checked FROM event_state WHERE event_id=?", (event["id"],)
+        "SELECT last_checked FROM platform_state WHERE event_id=? AND platform=?",
+        (event["id"], platform)
     ).fetchone()
     if not row or not row[0]:
         return True
@@ -161,11 +146,11 @@ def is_due_for_check(event, conn, now):
     return elapsed_hours >= required_interval_hours(days_until) - 0.25
 
 
-def mark_checked(conn, event_id, now_iso):
+def mark_checked(conn, event_id, platform, now_iso):
     conn.execute(
-        "INSERT INTO event_state (event_id, last_checked) VALUES (?, ?) "
-        "ON CONFLICT(event_id) DO UPDATE SET last_checked=excluded.last_checked",
-        (event_id, now_iso)
+        "INSERT INTO platform_state (event_id, platform, last_checked) VALUES (?, ?, ?) "
+        "ON CONFLICT(event_id, platform) DO UPDATE SET last_checked=excluded.last_checked",
+        (event_id, platform, now_iso)
     )
     conn.commit()
 
@@ -230,7 +215,7 @@ def fetch_seatgeek(event):
             params["venue.city"] = city
         if state:
             params["venue.state"] = state
-        r = seatgeek_get(url, params, timeout=10)
+        r = requests.get(url, params=params, headers=SEATGEEK_HEADERS, timeout=10)
         r.raise_for_status()
         items = r.json().get("events", [])
         if not items:
@@ -256,12 +241,13 @@ def fetch_seatgeek(event):
     return None
 
 
-PRICE_FETCHERS = [fetch_stubhub, fetch_seatgeek]
+PRICE_FETCHERS = [("stubhub", fetch_stubhub), ("seatgeek", fetch_seatgeek)]
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def run():
+def run(platforms=None):
+    """platforms: optional set restricting which fetchers run (default: all)."""
     from alert_engine import evaluate_triggers
 
     conn = init_db()
@@ -275,16 +261,30 @@ def run():
 
     now = utcnow()
     now_iso = now.isoformat()
+    fetchers = [(name, fn) for name, fn in PRICE_FETCHERS
+                if platforms is None or name in platforms]
 
     for event in events:
-        if not is_due_for_check(event, conn, now):
-            print(f"[SKIP] {event.get('event','?')} — not due for check")
+        days_until = event_days_until(event, now)
+        if days_until is None:
+            print(f"  [WARN] {event.get('id','?')} '{event.get('event','?')}' has "
+                  f"unparseable date '{event.get('date','')}' — skipping until a real date is set.")
+            continue
+        # Runner clock is UTC; a US evening event is still live when UTC has
+        # rolled to the next day, so keep checking through days_until == -1.
+        if days_until < -1:
+            continue
+
+        due = [(name, fn) for name, fn in fetchers
+               if is_platform_due(event, name, days_until, conn, now)]
+        if not due:
+            print(f"[SKIP] {event.get('event','?')} — no platforms due for check")
             continue
 
         print(f"\n[CHECK] {event['event']} on {event['date']}")
         results = []
 
-        for fetcher in PRICE_FETCHERS:
+        for platform_name, fetcher in due:
             result = fetcher(event)
             if result:
                 results.append(result)
@@ -297,14 +297,18 @@ def run():
                      result.get("quantity"), result.get("url"))
                 )
                 print(f"  [{result['platform'].upper()}] ${result['lowest_price']:.2f}")
+            mark_checked(conn, event["id"], platform_name, now_iso)
         conn.commit()
 
         evaluate_triggers(event, results, conn, now_iso)
-        mark_checked(conn, event["id"], now_iso)
 
     conn.close()
     print("\n[DONE] Price check complete.")
 
 
 if __name__ == "__main__":
-    run()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--platforms", help="Comma-separated platform list "
+                         "(stubhub,seatgeek). Default: all.")
+    args = parser.parse_args()
+    run(platforms=set(args.platforms.split(",")) if args.platforms else None)

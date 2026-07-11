@@ -1,4 +1,9 @@
-name: Scan New Events
+name: Scan New Events (SeatGeek, self-hosted)
+
+# Same SeatGeek-from-GitHub-Actions 403 as check_prices_selfhosted.yml — this
+# job only runs on a self-hosted (residential-IP) runner. Ticketmaster
+# discovery keeps running reliably in the cloud via scan_new_events.yml
+# regardless of this runner's availability.
 
 on:
   schedule:
@@ -14,7 +19,7 @@ concurrency:
 
 jobs:
   scan:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     steps:
       - uses: actions/checkout@v4
@@ -28,11 +33,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Scan for new events (Ticketmaster — SeatGeek runs separately, see scan_new_events_selfhosted.yml)
+      - name: Scan for new events (SeatGeek only)
         working-directory: agent
-        run: python auto_suggest.py --platforms ticketmaster
+        run: python auto_suggest.py --platforms seatgeek
         env:
-          TICKETMASTER_KEY: ${{ secrets.TICKETMASTER_KEY }}
+          SEATGEEK_CLIENT_ID: ${{ secrets.SEATGEEK_CLIENT_ID }}
           SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
           SENDGRID_FROM: ${{ secrets.SENDGRID_FROM }}
           NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
@@ -47,7 +52,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No database changes to commit."
           else
-            git commit -m "chore(db): event scan $(date -u +'%Y-%m-%d %H:%M UTC') [skip ci]"
+            git commit -m "chore(db): event scan (seatgeek/self-hosted) $(date -u +'%Y-%m-%d %H:%M UTC') [skip ci]"
             git pull --rebase origin main
             git push origin main
           fi

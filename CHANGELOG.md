@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.3 — 2026-07-11
+
+### SeatGeek CI 403 — investigated and resolved via self-hosted runner
+- Confirmed the 403 SeatGeek returns to GitHub-hosted runners (first seen 2026-07-06) is IP/ASN-level, not a bot-signature check: a browser-like `User-Agent` made no difference, and it isn't fixable with a rotating-IP proxy either — ScraperAPI's default free-tier pool got the same block, and its residential/premium pool (the tier that might work) costs 10x credits/request, which would exhaust the whole monthly free allowance in days at this project's call volume.
+- Researched alternative price sources instead of fighting the block further: Vivid Seats and Ticket Evolution both have real APIs but need a business/broker application (same wait as StubHub); TickPick has no direct public API; aggregators like TicketsData bundle everything into one API but start at $499/mo — none of this is worth it for a 10-event personal tracker.
+- Resolved by splitting SeatGeek onto a self-hosted runner (a real residential IP isn't blocked at all), while StubHub and Ticketmaster keep running on GitHub-hosted runners unaffected.
+- **Scheduling refactor required for this split**: `event_state` (one `last_checked` per event) replaced with `platform_state` (one `last_checked` per event **and** platform). Previously, checking any platform marked the whole event "checked," so two workflows checking different platforms on independent schedules would have starved each other. `fetcher.py` and `auto_suggest.py` both take an optional `--platforms` CLI flag to restrict which fetchers/scanners run in a given invocation.
+- New workflows `check_prices_selfhosted.yml` / `scan_new_events_selfhosted.yml` (SeatGeek only, `runs-on: self-hosted`); the existing `check_prices.yml` / `scan_new_events.yml` now run StubHub-only / Ticketmaster-only respectively.
+
 ## v1.2 — 2026-07-02
 
 ### Breaking / scope
