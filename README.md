@@ -2,7 +2,7 @@
 
 Monitors StubHub and SeatGeek prices. Alerts you by email when prices hit your target or drop ≥5%. Scans Ticketmaster + SeatGeek daily for new shows matching your artists/teams.
 
-**v1.2 change in scope:** Ticketmaster is no longer a price source. Its public Discovery API returns static face-value ranges (often missing), not live prices — real prices require the Inventory Status API, which needs approval (devportalinquiry@ticketmaster.com). TM is still used for new-event discovery and buy links. If/when Inventory Status access is granted, it can be added back as a price source.
+**v1.2 change in scope:** Ticketmaster is no longer a price source. Its public Discovery API returns static face-value ranges (often missing), not live prices — real prices require the Inventory Status/Partner API. Ticketmaster confirmed (2026-07-10) that these are closed APIs restricted to companies with an existing official distribution relationship, not available on request — so this is permanent, not pending. TM is still used for new-event discovery and buy links.
 
 ---
 

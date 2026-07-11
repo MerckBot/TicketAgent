@@ -3,7 +3,7 @@
 ## v1.2 — 2026-07-02
 
 ### Breaking / scope
-- **Ticketmaster removed as a price source** (Discovery API has no live prices; Inventory Status API pending approval). TM still powers new-event scanning and buy links. Digest drops the TM Low column.
+- **Ticketmaster removed as a price source** (Discovery API has no live prices; the Inventory Status/Partner API that does is a closed API restricted to Ticketmaster's official distribution partners — confirmed via their support team 2026-07-10, not obtainable by request). TM still powers new-event scanning and buy links. Digest drops the TM Low column.
 
 ### Critical fixes
 - **DB persistence**: replaced Actions cache (immutable keys froze the DB permanently; scan + digest were reading a day-one snapshot forever, causing duplicate "new show" emails daily) with committing `prices.db` to the repo. Added `concurrency` group + `contents: write` to serialize all DB writers. Removed the broken duplicate cache-save step.
