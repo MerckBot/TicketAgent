@@ -26,6 +26,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 
+import requests
+
 DATA_DIR = Path(__file__).parent.parent / "data"
 DB_PATH = DATA_DIR / "prices.db"
 NOTIFY_PATH = DATA_DIR / "notify.json"
@@ -34,12 +36,23 @@ EVENTS_PATH = DATA_DIR / "events.json"
 SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY", "")
 SENDGRID_FROM = os.environ.get("SENDGRID_FROM", "")
 NOTIFY_EMAIL = os.environ.get("NOTIFY_EMAIL", "jmerck2d2@gmail.com")
+TICKETMASTER_KEY = os.environ.get("TICKETMASTER_KEY", "")
 
 PRICE_PLATFORMS = ["stubhub", "seatgeek"]
 
 
 def esc(value):
     return html.escape(str(value)) if value is not None else ""
+
+
+def split_city_state(city_field):
+    """'Las Vegas, NV' -> ('Las Vegas', 'NV'); 'Las Vegas' -> ('Las Vegas', '')."""
+    if not city_field:
+        return "", ""
+    parts = [p.strip() for p in city_field.split(",")]
+    if len(parts) >= 2 and len(parts[-1]) == 2:
+        return ", ".join(parts[:-1]), parts[-1].upper()
+    return city_field.strip(), ""
 
 
 def load_notify():
@@ -189,6 +202,54 @@ def _latest_low(conn, event_id, platform, before=None):
     return row[0] if row else None
 
 
+def _latest_url(conn, event_id, platform):
+    """Listing URL from the most recent price_history row for a platform."""
+    row = conn.execute(
+        "SELECT listing_url FROM price_history "
+        "WHERE event_id=? AND platform=? "
+        "ORDER BY checked_at DESC LIMIT 1",
+        (event_id, platform)
+    ).fetchone()
+    return row[0] if row and row[0] else None
+
+
+def _ticketmaster_url(event):
+    """Look up this event's real Ticketmaster listing via the Discovery API.
+
+    Ticketmaster isn't a price source (see README), but its API does return a
+    real per-event permalink, which is what the digest's Ticketmaster column
+    links to. Bounded to the event's exact date so e.g. the three tracked
+    Wizard of Oz dates each link to their own listing, not all to the first.
+    """
+    if not TICKETMASTER_KEY:
+        return None
+    try:
+        event_date = datetime.date.fromisoformat(event["date"])
+    except (ValueError, TypeError, KeyError):
+        return None
+    city, state = split_city_state(event.get("city", ""))
+    params = {
+        "apikey": TICKETMASTER_KEY,
+        "keyword": event["event"],
+        "size": 1,
+        "startDateTime": f"{event_date.isoformat()}T00:00:00Z",
+        "endDateTime": f"{(event_date + datetime.timedelta(days=1)).isoformat()}T00:00:00Z",
+    }
+    if city:
+        params["city"] = city
+    if state:
+        params["stateCode"] = state
+    try:
+        r = requests.get("https://app.ticketmaster.com/discovery/v2/events.json",
+                          params=params, timeout=10)
+        r.raise_for_status()
+        events = r.json().get("_embedded", {}).get("events", [])
+        return events[0].get("url") if events else None
+    except Exception as e:
+        print(f"[Digest/TM] {event.get('id','?')}: {e}")
+        return None
+
+
 def send_digest():
     conn = sqlite3.connect(DB_PATH)
     events = json.loads(EVENTS_PATH.read_text())
@@ -205,8 +266,10 @@ def send_digest():
             event_date = datetime.date.fromisoformat(event["date"])
             delta = (event_date - today).days
             days_until = f"{delta}d" if delta >= 0 else "past"
+            date_display = event_date.strftime("%a, %m/%d/%y")
         except (ValueError, TypeError, KeyError):
             days_until = "?"
+            date_display = event.get("date", "?")
 
         current = {}
         for platform in PRICE_PLATFORMS:
@@ -231,15 +294,25 @@ def send_digest():
         def fmt(p):
             return f"${p:.2f}" if p is not None else "—"
 
+        def link_cell(url):
+            if not url:
+                return "—"
+            return f'<a href="{esc(url)}" style="color:#63b3ed;">Tickets →</a>'
+
+        tm_url = _ticketmaster_url(event)
+        sh_url = _latest_url(conn, event["id"], "stubhub")
+
         rows += f"""
         <tr>
           <td style="padding:10px;border-bottom:1px solid #333;">{esc(event['event'])}</td>
-          <td style="padding:10px;border-bottom:1px solid #333;">{esc(event['date'])}</td>
+          <td style="padding:10px;border-bottom:1px solid #333;">{esc(date_display)}</td>
           <td style="padding:10px;border-bottom:1px solid #333;">{days_until}</td>
           <td style="padding:10px;border-bottom:1px solid #333;">{fmt(current['stubhub'])}</td>
           <td style="padding:10px;border-bottom:1px solid #333;">{fmt(current['seatgeek'])}</td>
           <td style="padding:10px;border-bottom:1px solid #333;">${esc(event.get('max_price', '—'))}</td>
           <td style="padding:10px;border-bottom:1px solid #333;color:{trend_color};font-size:18px;">{trend}</td>
+          <td style="padding:10px;border-bottom:1px solid #333;">{link_cell(tm_url)}</td>
+          <td style="padding:10px;border-bottom:1px solid #333;">{link_cell(sh_url)}</td>
         </tr>"""
 
     conn.close()
@@ -260,6 +333,8 @@ def send_digest():
             <th style="padding:10px;text-align:left;">SeatGeek Low</th>
             <th style="padding:10px;text-align:left;">Your Target</th>
             <th style="padding:10px;text-align:left;">Trend (7d)</th>
+            <th style="padding:10px;text-align:left;">Ticketmaster</th>
+            <th style="padding:10px;text-align:left;">StubHub</th>
           </tr>
         </thead>
         <tbody>{rows}</tbody>

@@ -30,6 +30,7 @@ jobs:
         working-directory: agent
         run: python email_sender.py --mode digest
         env:
+          TICKETMASTER_KEY: ${{ secrets.TICKETMASTER_KEY }}
           SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
           SENDGRID_FROM: ${{ secrets.SENDGRID_FROM }}
           NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
