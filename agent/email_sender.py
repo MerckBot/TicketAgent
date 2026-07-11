@@ -218,8 +218,16 @@ def _ticketmaster_url(event):
 
     Ticketmaster isn't a price source (see README), but its API does return a
     real per-event permalink, which is what the digest's Ticketmaster column
-    links to. Bounded to the event's exact date so e.g. the three tracked
-    Wizard of Oz dates each link to their own listing, not all to the first.
+    links to.
+
+    Ticketmaster's dateTime is UTC while event["date"] is the local calendar
+    date, so an evening event can land on the next UTC day — the same bug
+    fixed once before in the now-removed fetch_ticketmaster (d01a47d), before
+    v1.2 dropped Ticketmaster as a price source. The server-side window here
+    is padded +/- 1 day to catch that, but disambiguating close-together
+    dates (e.g. the three tracked Wizard of Oz dates) then has to happen
+    client-side, matching each candidate's own localDate field — which is
+    already timezone-correct — against the exact target date.
     """
     if not TICKETMASTER_KEY:
         return None
@@ -228,12 +236,14 @@ def _ticketmaster_url(event):
     except (ValueError, TypeError, KeyError):
         return None
     city, state = split_city_state(event.get("city", ""))
+    window_start = event_date - datetime.timedelta(days=1)
+    window_end = event_date + datetime.timedelta(days=1)
     params = {
         "apikey": TICKETMASTER_KEY,
         "keyword": event["event"],
-        "size": 1,
-        "startDateTime": f"{event_date.isoformat()}T00:00:00Z",
-        "endDateTime": f"{(event_date + datetime.timedelta(days=1)).isoformat()}T00:00:00Z",
+        "size": 10,
+        "startDateTime": f"{window_start.isoformat()}T00:00:00Z",
+        "endDateTime": f"{window_end.isoformat()}T23:59:59Z",
     }
     if city:
         params["city"] = city
@@ -244,7 +254,12 @@ def _ticketmaster_url(event):
                           params=params, timeout=10)
         r.raise_for_status()
         events = r.json().get("_embedded", {}).get("events", [])
-        return events[0].get("url") if events else None
+        target = event_date.isoformat()
+        for ev in events:
+            local_date = (ev.get("dates", {}).get("start", {}) or {}).get("localDate")
+            if local_date == target:
+                return ev.get("url")
+        return None
     except Exception as e:
         print(f"[Digest/TM] {event.get('id','?')}: {e}")
         return None
