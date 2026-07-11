@@ -1,6 +1,6 @@
 # TicketWatch — Project Status
 
-_Last updated: 2026-07-10_
+_Last updated: 2026-07-11_
 
 ## What this is
 A personal GitHub Actions agent that monitors ticket prices (StubHub, SeatGeek;
@@ -23,18 +23,34 @@ and emails alerts. Repo: `MerckBot/TicketAgent`, local clone at
 `TICKETMASTER_KEY`, `SEATGEEK_CLIENT_ID`, `SENDGRID_API_KEY`, `NOTIFY_EMAIL`,
 `SMTP_USER`, `SMTP_PASS` — all working.
 
-**Not set yet:** `STUBHUB_CLIENT_ID` / `STUBHUB_CLIENT_SECRET`. Applied via
-email to affiliates@stubhub.com; awaiting their approval (no self-serve
-signup exists for StubHub's API).
+**Not set yet:**
+- `STUBHUB_CLIENT_ID` / `STUBHUB_CLIENT_SECRET`. Applied via email to
+  affiliates@stubhub.com; awaiting their approval (no self-serve signup
+  exists for StubHub's API).
+- `SCRAPERAPI_KEY` — sign up free at scraperapi.com (1,000 req/mo, no cost)
+  and add as a repo secret to unblock SeatGeek in CI (see below). Code is
+  already wired up; just needs the secret.
 
 ## Known, confirmed-permanent limitations
 - **Ticketmaster pricing is permanently unavailable**: their support
   confirmed (2026-07-10) the Inventory Status/Partner API is restricted to
   official distribution partners, not obtainable on request. Not revisitable.
+
+## Known limitations, workaround in place pending a secret
 - **SeatGeek returns 403 from GitHub Actions specifically** (works fine from
-  a residential IP with the same key/query) — looks like GitHub Actions'
-  runner IPs are blocked by SeatGeek or a WAF in front of it. Unresolved;
-  StubHub is meant to be the working CI price source once approved.
+  a residential IP with the same key/query). Confirmed 2026-07-11 it's an
+  IP/ASN-level block, not a bot-signature check — a browser-like
+  `User-Agent` made no difference. `fetcher.py`/`auto_suggest.py` now route
+  SeatGeek calls through ScraperAPI's rotating-IP proxy when `SCRAPERAPI_KEY`
+  is set (free tier, 1,000 req/mo — comfortably covers current volume).
+  Until that secret is added, SeatGeek keeps failing in CI and StubHub is
+  the working CI price source.
+- Researched paid ticket-data aggregators (TicketsData: StubHub + SeatGeek +
+  VividSeats + TickPick + Gametime in one API) as an alternative — starts at
+  $499/mo, not worth it for a 10-event personal tracker. Vivid Seats and
+  Ticket Evolution both have real APIs but need a business/broker
+  application similar to StubHub's; skipped for now per user decision
+  (2026-07-11) — StubHub + SeatGeek is enough sources.
 
 ## Tracked events
 10 events in `data/events.json` (Wizard of Oz x3, Bills x2, Sabres/Capitals
@@ -54,6 +70,6 @@ signup exists for StubHub's API).
 ## Open next steps
 1. Wait for StubHub approval; when it arrives, set
    `STUBHUB_CLIENT_ID`/`STUBHUB_CLIENT_SECRET` as secrets.
-2. Decide whether to pursue the SeatGeek-from-Actions 403 further (contact
-   support / proxy) or just leave StubHub as the CI price source.
+2. Sign up for a free ScraperAPI account and add `SCRAPERAPI_KEY` as a repo
+   secret to unblock SeatGeek in CI — code is ready, just needs the key.
 3. Add more events to `data/events.json` as needed — no code changes required.

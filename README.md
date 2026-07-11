@@ -28,6 +28,7 @@ Go to **Settings → Secrets and variables → Actions** and add:
 | `TICKETMASTER_KEY` | developer.ticketmaster.com | For new-event scanning |
 | `STUBHUB_CLIENT_ID` / `STUBHUB_CLIENT_SECRET` | developer.stubhub.com | For StubHub prices |
 | `SEATGEEK_CLIENT_ID` | seatgeek.com/account/develop | For SeatGeek prices + scanning |
+| `SCRAPERAPI_KEY` | scraperapi.com (free tier: 1,000 req/mo) | Works around SeatGeek's CI-only 403 (see Known limitations) |
 | `SENDGRID_API_KEY` | sendgrid.com | For email (or use SMTP) |
 | `SENDGRID_FROM` | Your **verified sender** address in SendGrid | With SendGrid |
 | `NOTIFY_EMAIL` | Where alerts go | Yes |
@@ -89,7 +90,7 @@ Checks continue one day past the event date to cover the UTC/local timezone gap 
 - `quantity`, `section_pref`, and `row_pref` in events.json are informational only — the fetched "lowest price" may be a single seat in any section. Enforcing them needs listing-level API access.
 - Events with `date: "TBD"` are skipped (with a log warning) until a real date is set.
 - The StubHub endpoint/auth in `token_manager.py` is from their older developer program — verify against whatever their API team sends with your credentials.
-- **SeatGeek returns `403 Forbidden` from GitHub Actions specifically** (confirmed 2026-07-06: identical client ID + query succeeds from a residential IP, fails from Actions' runners). Likely SeatGeek/a WAF blocking known datacenter IP ranges. Not a code or credentials issue — `fetch_seatgeek`/`scan_seatgeek` will keep failing in CI until this is resolved with SeatGeek support or worked around via a proxy. StubHub is the working price source in CI for now.
+- **SeatGeek returns `403 Forbidden` from GitHub Actions specifically** (confirmed 2026-07-06: identical client ID + query succeeds from a residential IP, fails from Actions' runners). Confirmed 2026-07-11 that it's IP/ASN-level (a browser-like `User-Agent` made no difference — still 403), not a bot-signature check. Workaround: set `SCRAPERAPI_KEY` (free tier) — `seatgeek_get()` in `fetcher.py`/`auto_suggest.py` routes the request through ScraperAPI's rotating-IP proxy instead of hitting SeatGeek directly. Without that secret set, SeatGeek keeps failing in CI and StubHub remains the working CI price source.
 
 ---
 

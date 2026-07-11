@@ -14,6 +14,7 @@ import sqlite3
 import datetime
 from datetime import timezone
 from pathlib import Path
+from urllib.parse import urlencode
 
 import requests
 
@@ -24,10 +25,12 @@ DB_PATH = DATA_DIR / "prices.db"
 EVENTS_PATH = DATA_DIR / "events.json"
 
 SG_CLIENT_ID = os.environ.get("SEATGEEK_CLIENT_ID", "")
+SCRAPERAPI_KEY = os.environ.get("SCRAPERAPI_KEY", "")
 
-# SeatGeek returns 403 to the default `python-requests/x.x` User-Agent from
-# GitHub Actions' IPs; a browser-like UA is a cheap thing to rule out before
-# assuming it's a hard IP/ASN block.
+# A browser-like UA didn't fix SeatGeek's 403 from GitHub Actions (confirmed
+# 2026-07-11) — it's an IP/ASN-level block, not a bot-signature check. Kept
+# anyway since it's harmless. SCRAPERAPI_KEY routes the request through
+# ScraperAPI's free-tier proxy (rotating IPs) to get around the block.
 SEATGEEK_HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
@@ -37,6 +40,23 @@ SEATGEEK_HEADERS = {
 
 def creds_present(value):
     return bool(value) and not value.startswith("PLACEHOLDER")
+
+
+def seatgeek_get(url, params, timeout=20):
+    """GET a SeatGeek endpoint, routed through ScraperAPI if configured.
+
+    SeatGeek 403s every request from GitHub Actions' IPs directly (confirmed
+    2026-07-11), so when SCRAPERAPI_KEY is set we tunnel through ScraperAPI's
+    rotating-IP proxy instead of hitting SeatGeek directly.
+    """
+    if creds_present(SCRAPERAPI_KEY):
+        target = f"{url}?{urlencode(params)}"
+        return requests.get(
+            "https://api.scraperapi.com",
+            params={"api_key": SCRAPERAPI_KEY, "url": target},
+            timeout=timeout + 20,  # ScraperAPI adds proxy/retry latency
+        )
+    return requests.get(url, params=params, headers=SEATGEEK_HEADERS, timeout=timeout)
 
 
 def utcnow():
@@ -210,7 +230,7 @@ def fetch_seatgeek(event):
             params["venue.city"] = city
         if state:
             params["venue.state"] = state
-        r = requests.get(url, params=params, headers=SEATGEEK_HEADERS, timeout=10)
+        r = seatgeek_get(url, params, timeout=10)
         r.raise_for_status()
         items = r.json().get("events", [])
         if not items:

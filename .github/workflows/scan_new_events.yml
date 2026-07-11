@@ -34,6 +34,7 @@ jobs:
         env:
           TICKETMASTER_KEY: ${{ secrets.TICKETMASTER_KEY }}
           SEATGEEK_CLIENT_ID: ${{ secrets.SEATGEEK_CLIENT_ID }}
+          SCRAPERAPI_KEY: ${{ secrets.SCRAPERAPI_KEY }}
           SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
           SENDGRID_FROM: ${{ secrets.SENDGRID_FROM }}
           NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
