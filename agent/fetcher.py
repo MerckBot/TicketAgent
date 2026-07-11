@@ -25,6 +25,15 @@ EVENTS_PATH = DATA_DIR / "events.json"
 
 SG_CLIENT_ID = os.environ.get("SEATGEEK_CLIENT_ID", "")
 
+# SeatGeek returns 403 to the default `python-requests/x.x` User-Agent from
+# GitHub Actions' IPs; a browser-like UA is a cheap thing to rule out before
+# assuming it's a hard IP/ASN block.
+SEATGEEK_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"),
+    "Accept": "application/json",
+}
+
 
 def creds_present(value):
     return bool(value) and not value.startswith("PLACEHOLDER")
@@ -201,7 +210,7 @@ def fetch_seatgeek(event):
             params["venue.city"] = city
         if state:
             params["venue.state"] = state
-        r = requests.get(url, params=params, timeout=10)
+        r = requests.get(url, params=params, headers=SEATGEEK_HEADERS, timeout=10)
         r.raise_for_status()
         items = r.json().get("events", [])
         if not items:
